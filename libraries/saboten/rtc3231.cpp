@@ -22,6 +22,7 @@ RTC3231::RTC3231()
 void RTC3231::begin()
 {
     Wire.begin();
+    setStatus(0); // clear OSF
     setCtrl(DS3231_INTCN);
 }
 
@@ -79,8 +80,6 @@ void RTC3231::getTime(ts_t *ts)
             time[i] = bcdToDec(val);
         }
     }
-
-    Serial.print(cent); Serial.print(", "); Serial.println(time[6]);
 
     ts->sec = time[0];
     ts->min = time[1];
@@ -200,25 +199,23 @@ uint8_t RTC3231::getAging()
 /************************************************************************/
 float RTC3231::getTemperature()
 {
-    float rv;
-    uint8_t msb, lsb;
-    int8_t nint;
-
+    float ret;
+    uint8_t b1, b0;
+    int8_t neg;
 
     initReadFromAddr(DS3231_TEMPERATURE_ADDR);
-
     Wire.requestFrom(DS3231_I2C_ADDR, 2);
-    msb = Wire.read();
-    lsb = Wire.read() >> 6;
+    b1 = Wire.read();
+    b0 = Wire.read() >> 6;
 
-    if (msb & 0x80)
-        nint = msb | ~((1 << 8) - 1);      // if negative get two's complement
+    if (b1 & 0x80)
+        neg = b1 | ~((1 << 8) - 1);     
     else
-        nint = msb;
+        neg = b1;
 
-    rv = 0.25 * lsb + nint;
+    ret = 0.25 * b0 + neg;
 
-    return rv;
+    return ret;
 }
 
 /************************************************************************/
@@ -226,9 +223,21 @@ float RTC3231::getTemperature()
 //
 //
 /************************************************************************/
-void RTC3231::setAlarm1(uint8_t day, uint8_t hour, uint8_t min, uint8_t sec, uint8_t *flags)
+void RTC3231::setAlarm1(uint8_t day, uint8_t hour, uint8_t min, uint8_t seconds, uint8_t alarmType)
 {
 
+    uint8_t i, time[4] = {seconds, min, hour, day};
+    
+    Wire.beginTransmission(DS3231_I2C_ADDR);
+    Wire.write(DS3231_ALARM1_ADDR);
+    for (int i=0; i<4; i++)
+    {
+        time[i] = decToBcd(time[i]);
+        time[i] |= ((alarmType >> i) & 0x01) << 7;
+        if (alarmType == MATCH_DAY) time[i] |= 1<<6;
+        Wire.write(time[i]);
+    }
+    Wire.endTransmission();
 }
 
 /************************************************************************/
@@ -238,7 +247,30 @@ void RTC3231::setAlarm1(uint8_t day, uint8_t hour, uint8_t min, uint8_t sec, uin
 /************************************************************************/
 void RTC3231::getAlarm1(char *buf, uint8_t len)
 {
+    uint8_t i, alarmType, time[4];
+    initReadFromAddr(DS3231_ALARM1_ADDR);
+    Wire.requestFrom(DS3231_I2C_ADDR, 4);
 
+    alarmType = 0;
+
+    // parse the alarm regs and store the flags in the alarmType var
+    for (i=0; i<4; i++)
+    {
+        time[i] = Wire.read();
+        alarmType |= ((time[i]>>7 & 0x01) << i);
+
+        if (i==3)
+        {
+            if (time[i] & 0x40)
+            {
+                alarmType |= 1<<4;
+            }
+        }
+        time[i] &= 0x3F;
+        time[i] = bcdToDec(time[i]);
+    }
+
+    snprintf(buf, len, "Sec: %02d Min: %02d Hr: %02d Day: %02d Type: %02X\n", time[0], time[1], time[2], time[3], alarmType);
 }
 
 /************************************************************************/
@@ -272,7 +304,7 @@ void RTC3231::enableAlarm1()
 {
     uint8_t tmp;
     tmp = getCtrl() | DS3231_A1IE;
-    setStatus(tmp);
+    setCtrl(tmp);
 }
 
 /************************************************************************/
@@ -284,7 +316,7 @@ void RTC3231::disableAlarm1()
 {
     uint8_t tmp;
     tmp = getCtrl() & ~DS3231_A1IE;
-    setStatus(tmp);
+    setCtrl(tmp);
 }
 
 /************************************************************************/
@@ -292,9 +324,23 @@ void RTC3231::disableAlarm1()
 //
 //
 /************************************************************************/
-void RTC3231::setAlarm2(uint8_t day, uint8_t hour, uint8_t min, uint8_t *flags)
+void RTC3231::setAlarm2(uint8_t day, uint8_t hour, uint8_t min, uint8_t alarmType)
 {
+    uint8_t i, time[3] = {min, hour, day};
 
+    // shift alarmType by 1 since there are no seconds in alarm 2
+    alarmType >>= 1;
+
+    Wire.beginTransmission(DS3231_I2C_ADDR);
+    Wire.write(DS3231_ALARM2_ADDR);
+    for (int i=0; i<3; i++)
+    {
+        time[i] = decToBcd(time[i]);
+        time[i] |= ((alarmType >> i) & 0x01) << 7;
+        if (alarmType & 0x08) time[i] |= 1<<6;
+        Wire.write(time[i]);
+    }
+    Wire.endTransmission();
 }
 
 /************************************************************************/
@@ -304,7 +350,28 @@ void RTC3231::setAlarm2(uint8_t day, uint8_t hour, uint8_t min, uint8_t *flags)
 /************************************************************************/
 void RTC3231::getAlarm2(char *buf, uint8_t len)
 {
+    uint8_t i, alarmType, time[3];
+    initReadFromAddr(DS3231_ALARM2_ADDR);
+    Wire.requestFrom(DS3231_I2C_ADDR, 3);
 
+    // parse the alarm regs and store the flags in the alarmType var
+    for (i=0; i<3; i++)
+    {
+        time[i] = Wire.read();
+        alarmType |= ((time[i]>>7 & 0x01) << i);
+
+        if (i==2)
+        {
+            if (time[i] & 0x40)
+            {
+                alarmType |= 1<<3;
+            }
+        }
+        time[i] &= 0x3F;
+        time[i] = bcdToDec(time[i]);
+    }
+
+    snprintf(buf, len, "Min: %02d Hr: %02d Day: %02d Type: %02X\n", time[0], time[1], time[2], alarmType);
 }
 
 /************************************************************************/
@@ -338,7 +405,7 @@ void RTC3231::enableAlarm2()
 {
     uint8_t tmp;
     tmp = getCtrl() | DS3231_A2IE;
-    setStatus(tmp);
+    setCtrl(tmp);
 }
 
 /************************************************************************/
@@ -350,7 +417,7 @@ void RTC3231::disableAlarm2()
 {
     uint8_t tmp;
     tmp = getCtrl() & ~DS3231_A2IE;
-    setStatus(tmp);
+    setCtrl(tmp);
 }
 
 /************************************************************************/

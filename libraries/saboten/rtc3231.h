@@ -38,6 +38,18 @@ enum
     DS3231_OSF      = 0x80
 };
 
+// alarm masks
+enum 
+{
+    EVERY_SECOND    = 0x0F,
+    EVERY_MINUTE    = 0x0F,
+    MATCH_SECOND    = 0x0E,    // match seconds
+    MATCH_MINUTE    = 0x0C,    // match minutes *and* seconds
+    MATCH_HOUR      = 0x08,    // match hours *and* minutes, seconds
+    MATCH_DATE      = 0x00,    // match date *and* hours, minutes, seconds
+    MATCH_DAY       = 0x10    // match day *and* hours, minutes, seconds
+};
+
 typedef struct 
 {
     uint8_t sec;         /* seconds */
@@ -73,15 +85,14 @@ public:
     uint8_t getAging();
     float getTemperature();
 
-    void setAlarm1(uint8_t day, uint8_t hour, uint8_t min, uint8_t sec, uint8_t *flags);
+    void setAlarm1(uint8_t day, uint8_t hour, uint8_t min, uint8_t sec, uint8_t alarmType);
     void getAlarm1(char *buf, uint8_t len);
     void clearAlarm1();
     bool isAlarm1On();
     void enableAlarm1();
     void disableAlarm1();
 
-
-    void setAlarm2(uint8_t day, uint8_t hour, uint8_t min, uint8_t *flags);
+    void setAlarm2(uint8_t day, uint8_t hour, uint8_t min, uint8_t alarmType);
     void getAlarm2(char *buf, uint8_t len);
     void clearAlarm2();
     bool isAlarm2On();
