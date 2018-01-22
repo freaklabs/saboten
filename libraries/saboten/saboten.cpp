@@ -45,6 +45,8 @@ boolean Saboten::begin()
 {
     uint8_t reg;
 
+    pinMode(pinSdSeln, INPUT_PULLUP);
+
     rtc.begin();
     attachInterrupt(RTC_INTP, Saboten::rtcIntp, FALLING);
 
@@ -258,10 +260,12 @@ void Saboten::setAlarm(uint8_t alarm, uint8_t day, uint8_t hour, uint8_t min, ui
     if (alarm == ALARM2)
     {
         rtc.setAlarm2(day, hour, min, alarmType);
+        rtc.enableAlarm2();
     }
     else if (alarm == ALARM1)
     {
         rtc.setAlarm1(day, hour, min, 0, alarmType);
+        rtc.enableAlarm1();
     }
     else
     {
