@@ -39,8 +39,6 @@ public:
     const uint8_t pinSdSeln        = 19;
 
     boolean sleeping = false;
-    SdFat sd;
-    SdFile file;
     char buf[50];
     ts_t time;
 
