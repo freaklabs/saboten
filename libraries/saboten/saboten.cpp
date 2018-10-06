@@ -20,12 +20,12 @@
 #define RTC_INTP 2
 #define VCC 3.3
 #define AREF 2.5
-#define CTRLZ 0x1A
 
 static volatile boolean rtcFlag = false;
 
 // make single instance of saboten to simplify instantation
 Saboten sab;
+
 
 /************************************************************************/
 // 
@@ -34,6 +34,7 @@ Saboten sab;
 /************************************************************************/
 Saboten::Saboten()
 {
+    volatile rtcFlag = false;
 }
 
 /************************************************************************/
@@ -48,7 +49,7 @@ boolean Saboten::begin()
     pinMode(pinSdSeln, INPUT_PULLUP);
 
     rtc.begin();
-    attachInterrupt(RTC_INTP, Saboten::rtcIntp, FALLING);
+    attachInterrupt(RTC_INTP, getIntp, FALLING);
 
     for (int i=0; i<2; i++)
     {
@@ -56,6 +57,7 @@ boolean Saboten::begin()
     }
 
     DBG_PRINTLN(F("Initialization complete"));
+    
     return true;
 }
 
@@ -68,23 +70,38 @@ uint8_t Saboten::getIntp()
 {
     if (rtcFlag)
     {
-        rtcFlag = false;
+        uint8_t alm;
+        uint8_t status = rtcGetStatus();
 
-        // do stuff here
-    }    
-    return 0;
+        status &= (DS3231_A2F | DS3231_A1F);
+
+        if (status & DS3231_A1F)
+        {
+            alm = MINUTE_ALARM;
+            status &= ~DS3231_A1F;
+        }
+        else if (status & DS3231_A2F)
+        {
+            alm = HOUR_ALARM;
+            status &= ~DS3231_A2F;
+        }
+
+        // if we get two interrupts, we don't clear the rtcFlag until all interrupts
+        // have been serviced.
+        if (status == 0)
+        {
+            rtcFlag = false;
+        }
+
+        rtcClearAlarm(alm);
+        rtcEnableAlarm(alm);
+            return alm;
+    }
+    else
+    {
+        return 0;
+    }
 }
-
-/********************************************************************/
-//
-//
-//
-/********************************************************************/
-void Saboten::rtcIntp()
-{
-  rtcFlag = true;
-}
-
 /********************************************************************/
 //
 //
@@ -112,9 +129,12 @@ void Saboten::sleepMcu()
 
     // disable UARTs
     uart0Reg = UCSR0B;
-    uart1Reg = UCSR1B;
     UCSR0B = 0x00;
+
+#if defined(__AVR_ATmega1284P__)
+    uart1Reg = UCSR1B;
     UCSR1B = 0x00;
+#endif
 
     // set all inputs
     portCReg = PORTC;
@@ -138,8 +158,11 @@ void Saboten::sleepMcu()
     // sleeping here
 
     // waking up here
-    UCSR0B = uart0Reg;
+#if defined(__AVR_ATmega1284P__)
     UCSR1B = uart1Reg;
+#endif
+    
+    UCSR0B = uart0Reg;
     ADCSRA |= (1 << ADEN); 
 
     PORTC = portCReg;
@@ -155,7 +178,8 @@ void Saboten::sleepMcu()
 float Saboten::getVbat()
 {
     uint16_t bat = analogRead(pinVbatSense);
-    return (float)(bat*2*VCC/1023.0);
+    volts = (float)(bat * AREF/1023.0);
+    return (volts * 2.0);
 }   
 
 /**************************************************************************/
@@ -163,8 +187,12 @@ float Saboten::getVbat()
 /**************************************************************************/
 float Saboten::getVsol()
 {
-    uint16_t sol = analogRead(pinVsolSense);
-    return (float)(sol*2*VCC/1023.0);
+    uint16_t sol;
+    float volts;
+
+    sol = analogRead(pinVsolSense);
+    volts = (float)(sol*AREF/1023.0);
+    return (volts * 2.0);
 }   
 
 /************************************************************************/
@@ -192,209 +220,378 @@ uint32_t Saboten::elapsedTime(uint32_t startTime)
 /**************************************************************************/
 // 
 /**************************************************************************/
-void Saboten::setTime(int hour, int min, int sec)
+void Saboten::rtcSetTime(int yr, int mon, int day, int hour, int min, int sec)
 {
-    rtc.getTime(&time);
+    struct ts time;
+    memset(&time, 0, sizeof(time));
+
+    time.year = yr;
+    time.mon = mon;
+    time.mday = day;
     time.hour = hour;
     time.min = min;
     time.sec = sec;
-    rtc.setTime(&time);
+    DS3231_set(time);
 }
 
 /**************************************************************************/
 // 
 /**************************************************************************/
-void Saboten::setDate(int year, int mon, int day)
+struct ts Saboten::rtcGetTime()
 {
-    rtc.getTime(&time);
-    time.year = year;
-    time.mon = mon;
-    time.mday = day;
-    rtc.setTime(&time);
-}
-
-/**************************************************************************/
-// 
-/**************************************************************************/
-ts_t Saboten::getTime()
-{
-    rtc.getTime(&time);
+    struct ts time;
+    DS3231_get(&time);
     return time;
 }
 
 /**************************************************************************/
 // 
 /**************************************************************************/
-char *Saboten::printTime()
+void Saboten::rtcPrintTime(char *datetime)
 {
-    rtc.getTime(&time);
-    sprintf(buf, "%02d:%02d:%02d", time.hour, time.min, time.sec);
-    return buf;
+  struct ts time = rtcGetTime();
+  memset(tmp, 0, sizeof(tmp));
+  sprintf(tmp, "%02d:%02d:%02d", time.hour, time.min, time.sec);
+  memcpy(datetime, tmp, strlen(tmp)+1);
 }
 
 /**************************************************************************/
 // 
 /**************************************************************************/
-char *Saboten::printDate()
+void Saboten::rtcPrintDate(char *datetime)
 {
-    rtc.getTime(&time);
-    sprintf(buf, "%04d/%02d/%02d", time.year, time.mon, time.mday);
-    return buf;
-}
-
-/**************************************************************************/
-// 
-/**************************************************************************/
-char *Saboten::printFullTime()
-{
-    rtc.getTime(&time);
-    sprintf(buf, "%02d/%02d/%02d %02d:%02d:%02d", time.year-2000, time.mon, time.mday, time.hour, time.min, time.sec);
-    return buf;
-}
-
-/**************************************************************************/
-// 
-/**************************************************************************/
-void Saboten::setAlarm(uint8_t alarm, uint8_t day, uint8_t hour, uint8_t min, uint8_t alarmType)
-{
-    if (alarm == ALARM2)
-    {
-        rtc.setAlarm2(day, hour, min, alarmType);
-        rtc.enableAlarm2();
-    }
-    else if (alarm == ALARM1)
-    {
-        rtc.setAlarm1(day, hour, min, 0, alarmType);
-        rtc.enableAlarm1();
-    }
-    else
-    {
-    }
-}
-
-/*************************************************************
-
-*************************************************************/
-char *Saboten::getAlarm(uint8_t alarm)
-{
-    if (alarm == ALARM2)
-    {
-        rtc.getAlarm2(buf, 50);
-    }
-    else if (alarm == ALARM1)
-    {
-        rtc.getAlarm1(buf, 50);
-    }
-    else
-    {
-        sprintf(buf, "NO ALARM");
-    }
-    return buf;
-}
-
-/*************************************************************
-
-*************************************************************/
-void Saboten::enableAlarm(uint8_t alarm)
-{
-    if (alarm == ALARM2)
-    {
-        rtc.enableAlarm2();
-    }
-    else if (alarm == ALARM1)
-    {
-        rtc.enableAlarm1();
-    }
-    else
-    {
-    }
-}
-
-/*************************************************************
-
-*************************************************************/
-void Saboten::disableAlarm(uint8_t alarm)
-{
-    if (alarm == ALARM2)
-    {
-        rtc.disableAlarm2();
-    }
-    else if (alarm == ALARM1)
-    {
-        rtc.disableAlarm1();
-    }
-    else
-    {
-    }
-}
-
-/*************************************************************
-
-*************************************************************/
-void Saboten::clearAlarm(uint8_t alarm)
-{
-    if (alarm == ALARM2)
-    {
-        rtc.clearAlarm2();
-    }
-    else if (alarm == ALARM1)
-    {
-        rtc.clearAlarm1();
-    }
-    else
-    {
-    }
-}
-
-/*************************************************************
-
-*************************************************************/
-bool Saboten::isAlarmOn(uint8_t alarm)
-{
-    if (alarm == ALARM2)
-    {
-        return rtc.isAlarm2On();
-    }
-    else if (alarm == ALARM1)
-    {
-        return rtc.isAlarm1On();
-    }
-    else
-    {
-    }
+  struct ts time = rtcGetTime();
+  memset(tmp, 0, sizeof(tmp));
+  sprintf(tmp, "%04d/%02d/%02d", time.year, time.mon, time.mday);
+  memcpy(datetime, tmp, strlen(tmp)+1);
 }
 
 
 /**************************************************************************/
 // 
 /**************************************************************************/
-uint8_t Saboten::getRtcControl()
+void Saboten::rtcPrintTimeAndDate(char *datetime)
 {
-    return rtc.getCtrl();
+  struct ts time = rtcGetTime();
+  memset(tmp, 0, sizeof(tmp));
+  sprintf(tmp, "%04d/%02d/%02d,%02d:%02d:%02d", time.year, time.mon, time.mday, time.hour, time.min, time.sec);
+  memcpy(datetime, tmp, strlen(tmp)+1);
 }
 
 /**************************************************************************/
 // 
 /**************************************************************************/
-uint8_t Saboten::getRtcStatus()
+void Saboten::rtcPrintFullTime(char *datetime)
 {
-    return rtc.getStatus();
+  struct ts time = rtcGetTime();
+  memset(tmp, 0, sizeof(tmp));
+  sprintf(tmp, "%02d/%02d/%02d %02d:%02d:%02d", time.year-2000, time.mon, time.mday, time.hour, time.min, time.sec);
+  memcpy(datetime, tmp, strlen(tmp)+1);
 }
 
 /**************************************************************************/
 // 
 /**************************************************************************/
-void Saboten::setRtcStatus(uint8_t reg)
+void Saboten::rtcSetAlarm(uint8_t alarm, uint8_t day, uint8_t hour, uint8_t min, uint8_t sec, uint8_t repeat)
 {
-    rtc.setStatus(reg);
+    uint8_t i;
+    uint8_t flags[5] = {0};
+
+    // flags define what calendar component to be checked against the current time in order
+    // to trigger the alarm - see datasheet
+    // A1M1 (seconds) (0 to enable, 1 to disable)
+    // A1M2 (minutes) (0 to enable, 1 to disable)
+    // A1M3 (hour)    (0 to enable, 1 to disable) 
+    // A1M4 (day)     (0 to enable, 1 to disable)
+    // DY/DT          (dayofweek == 1/dayofmonth == 0)
+    switch (repeat)
+    {
+      case EVERY_SECOND:
+      for (i=0; i<4; i++) flags[i] = 1;
+      break;
+
+      case EVERY_MINUTE:
+      for (i=1; i<4; i++) flags[i] = 1;
+      break;
+
+      case EVERY_HOUR:
+      for (i=2; i<4; i++) flags[i] = 1;
+      break;
+
+      case EVERY_DAY:
+      for (i=3; i<4; i++) flags[i] = 1;
+      break;
+
+      default:
+      memset(flags, 0, sizeof(flags)/sizeof(uint8_t));
+      break;
+    }
+
+    switch (alarm)
+    {
+        case MINUTE_ALARM:
+            DS3231_clear_a1f();
+            DS3231_set_a1(sec, min, hour, day, flags); 
+        break;
+
+        case HOUR_ALARM:
+            DS3231_clear_a2f();
+            DS3231_set_a2(min, hour, day, flags); 
+        break;
+
+        default:
+        return;
+    }
+
+    rtcEnableAlarm(alarm);
+}
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+void Saboten::rtcGetAlarm(uint8_t alarm, uint8_t *data)
+{
+    uint8_t addr;
+    switch (alarm)
+    {
+        case MINUTE_ALARM:
+            addr = DS3231_ALARM1_ADDR;
+        break;
+
+        case HOUR_ALARM:
+            addr = DS3231_ALARM2_ADDR;
+        break;
+
+        default:
+        return;
+    }
+
+    Wire.beginTransmission(DS3231_I2C_ADDR);
+    Wire.write(addr);
+    Wire.endTransmission();
+    Wire.requestFrom(DS3231_I2C_ADDR, 5);
+
+    for (int i = 0; i < 5; i++) 
+    {
+        data[i] = Wire.read();
+    }
+}
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+uint8_t Saboten::rtcGetControl()
+{
+    return DS3231_get_creg();
+}
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+uint8_t Saboten::rtcGetStatus()
+{
+    return DS3231_get_sreg();
+}
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+void Saboten::rtcSetStatus(uint8_t reg)
+{
+    DS3231_set_sreg(reg);
     return;
 }
 
+/**************************************************************************/
+// 
+/**************************************************************************/
+void Saboten::rtcClearAlarm(uint8_t alarm)
+{
+    switch (alarm)
+    {
+        case MINUTE_ALARM:
+            DS3231_clear_a1f();
+        break;
+
+        case HOUR_ALARM:
+            DS3231_clear_a2f();
+        break;
+
+        default:
+        return;
+    }
+}
 
 /**************************************************************************/
 // 
 /**************************************************************************/
-float Saboten::getRtcTemp()
+void Saboten::rtcEnableAlarm(uint8_t alarm)
 {
-    return rtc.getTemperature();
+    uint8_t reg;
+    switch (alarm)
+    {
+        case MINUTE_ALARM:
+            reg = DS3231_get_creg();
+            DS3231_set_creg(reg | DS3231_INTCN | DS3231_A1IE);
+        break;
+
+        case HOUR_ALARM:
+            reg = DS3231_get_creg();
+            DS3231_set_creg(reg | DS3231_INTCN | DS3231_A2IE);
+        break;
+    
+        default:
+        return;
+    }
 }
+
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+void Saboten::rtcDisableAlarm(uint8_t alarm)
+{
+    uint8_t reg = DS3231_get_addr(DS3231_INTCN);
+
+    switch (alarm)
+    {
+        case MINUTE_ALARM:
+            reg &= ~DS3231_A1IE;
+        break;
+
+        case HOUR_ALARM:
+            reg &= ~DS3231_A2IE;
+        break;
+
+        default:
+        return;
+    }
+    DS3231_set_addr(DS3231_INTCN, reg);
+}
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+uint8_t Saboten::rtcGetTemp()
+{
+    float temp = DS3231_get_treg();
+    return round(temp);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// SD related functions
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// only on Saboten Pro Devices
+#if defined(__AVR_ATmega1284P__)
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+boolean Saboten3G::sdBegin(uint8_t csPin)
+{
+    boolean st = sd.begin(csPin, SPI_HALF_SPEED);
+    if (!st)
+    {
+        DBG_PRINTLN(F("[ERROR] Card failed, or not present"));
+        sd.initErrorHalt();
+    }
+    return st;
+}
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+boolean Saboten3G::sdOpen(const char *filename, uint8_t mode)
+{
+    return file.open(filename, mode);
+}
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+void Saboten3G::sdLs()
+{
+    sd.ls(LS_R);
+}
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+int16_t Saboten3G::sdRead()
+{
+    return file.read();
+}
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+boolean Saboten3G::sdWrite(const char *data)
+{
+    file.print(data);
+}
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+boolean Saboten3G::sdClose()
+{
+    file.close();
+}
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+boolean Saboten3G::sdRemove(const char *filename)
+{
+    sd.remove(filename);
+}
+
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+uint32_t Saboten3G::sdAvailable()
+{
+    return file.available();
+}
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+boolean Saboten3G::sdMkDir(const char *filepath)
+{
+    return sd.mkdir(filepath);
+}
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+boolean Saboten3G::sdChDir(const char *filepath)
+{
+    return sd.chdir(filepath);
+}
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+boolean Saboten3G::sdExists(const char *filename)
+{
+    return sd.exists(filename);
+}
+
+/**************************************************************************/
+// 
+/**************************************************************************/
+void Saboten3G::sdDateTime(uint16_t *date, uint16_t *time)
+{
+    struct ts now = rtcGetTime();
+
+    // return date using FAT_DATE macro to format fields
+    *date = FAT_DATE(now.year, now.mon, now.mday);
+
+    // return time using FAT_TIME macro to format fields
+    *time = FAT_TIME(now.hour, now.min, now.sec);
+}
+#endif
